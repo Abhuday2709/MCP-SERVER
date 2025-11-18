@@ -3,8 +3,10 @@ import {
   getGoogleAuthUrl,
   googleCallback,
   getAuthStatus,
-  logout
+  logout,
+  getGoogleTokens
 } from '../controllers/authController.js';
+import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -15,5 +17,8 @@ router.get('/google/callback', googleCallback);
 // Status and logout
 router.get('/status', getAuthStatus);
 router.post('/logout/:provider', logout);
+
+// Protected route to get Google tokens
+router.get('/google/tokens', authenticateToken, getGoogleTokens);
 
 export default router;
