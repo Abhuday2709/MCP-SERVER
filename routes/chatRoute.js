@@ -1,8 +1,12 @@
 import express from "express"
-import { aiResponse } from "../controllers/chatController.js"
+import { aiResponse, getChatStatus } from "../controllers/chatController.js"
 
 const router = express.Router()
 
-router.post('/chat',aiResponse);
+// Unified smart chat endpoint (auto-detects MCP usage)
+router.post('/chat', aiResponse);
+
+// Get chat status (what tools are available)
+router.get('/chat/status', getChatStatus);
 
 export default router;

@@ -5,6 +5,9 @@ import { generateToken, setTokenCookie, clearTokenCookie, verifyToken } from '..
 // In-memory token storage (use Redis in production)
 const userTokens = new Map();
 
+// Export userTokens so other modules can access it
+export { userTokens };
+
 // Google Authentication
 export const getGoogleAuthUrl = (req, res) => {
   const authUrl = oauth2Client.generateAuthUrl({
@@ -38,11 +41,18 @@ export const googleCallback = async (req, res) => {
     // Generate JWT
     const jwtToken = generateToken(payload);
     
-    // Store Google tokens (use Redis/DB in production)
+    // Store Google tokens with access token for MCP (UPDATED)
     userTokens.set(data.id, {
       googleTokens: tokens,
+      googleAccessToken: tokens.access_token, // Add this for easy access
+      googleRefreshToken: tokens.refresh_token, // Add this for refresh
       user: payload
     });
+
+    console.log("userTokens set",userTokens);
+    
+    
+    console.log(`Stored tokens for user ${data.id}`);
     
     // Set JWT in cookie
     setTokenCookie(res, jwtToken);
@@ -103,6 +113,7 @@ export const logout = (req, res) => {
     const decoded = verifyToken(token);
     if (decoded && decoded.userId) {
       userTokens.delete(decoded.userId);
+      console.log(`Deleted tokens for user ${decoded.userId}`);
     }
   }
   

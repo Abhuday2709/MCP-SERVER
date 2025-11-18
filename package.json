@@ -21,8 +21,10 @@
     "express": "^5.1.0",
     "express-session": "^1.18.2",
     "googleapis": "^166.0.0",
+    "ioredis": "^5.8.2",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.19.3"
+    "mongoose": "^8.19.3",
+    "redis": "^5.9.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"
