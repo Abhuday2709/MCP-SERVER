@@ -1,26 +1,33 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import { verifyToken } from '../utils/jwt.js';
-import { userTokens } from './authController.js';
+import redis from '../config/redisClient.js';
 import mcpClient from '../mcp/client/mcp-client.js';
 
 dotenv.config();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// Redis key prefix for user tokens
+const USER_TOKEN_PREFIX = 'user:token:';
+
 // Helper to get user's Google access token
-function getUserAccessToken(req) {
+async function getUserAccessToken(req) {
   const token = req.cookies.auth_token;
-  console.log("cookies",req.cookies);
+  console.log("cookies", req.cookies);
   
   if (!token) return null;
   
   const decoded = verifyToken(token);
-  console.log("decoded",decoded);
+  console.log("decoded", decoded);
   
   if (!decoded) return null;
   
-  const userData = userTokens.get(decoded.userId);
-  console.log("userData",userData);
+  const userDataStr = await redis.get(`${USER_TOKEN_PREFIX}${decoded.userId}`);
+  
+  if (!userDataStr) return null;
+  
+  const userData = JSON.parse(userDataStr);
+  console.log("userData", userData);
   
   return userData?.googleAccessToken || null;
 }
@@ -49,7 +56,7 @@ export async function aiResponse(req, res) {
     }
 
     // Get user's Google access token (if available)
-    const googleAccessToken = getUserAccessToken(req);
+    const googleAccessToken = await getUserAccessToken(req);
     const isAuthenticated = !!googleAccessToken;
     
     // Check if this is an email-related query
@@ -283,7 +290,7 @@ Please provide a clear, friendly, and well-formatted response to the user based 
 // Get chat status with MCP tools
 export async function getChatStatus(req, res) {
   try {
-    const googleAccessToken = getUserAccessToken(req);
+    const googleAccessToken = await getUserAccessToken(req);
     
     if (!googleAccessToken) {
       return res.json({

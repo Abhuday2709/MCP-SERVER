@@ -1,12 +1,10 @@
 import { oauth2Client, SCOPES as GOOGLE_SCOPES } from '../config/googleConfig.js';
 import { google } from 'googleapis';
 import { generateToken, setTokenCookie, clearTokenCookie, verifyToken } from '../utils/jwt.js';
+import redis from '../config/redisClient.js';
 
-// In-memory token storage (use Redis in production)
-const userTokens = new Map();
-
-// Export userTokens so other modules can access it
-export { userTokens };
+// Redis key prefix for user tokens
+const USER_TOKEN_PREFIX = 'user:token:';
 
 // Google Authentication
 export const getGoogleAuthUrl = (req, res) => {
@@ -41,18 +39,22 @@ export const googleCallback = async (req, res) => {
     // Generate JWT
     const jwtToken = generateToken(payload);
     
-    // Store Google tokens with access token for MCP (UPDATED)
-    userTokens.set(data.id, {
+    // Store Google tokens in Redis
+    const userData = {
       googleTokens: tokens,
-      googleAccessToken: tokens.access_token, // Add this for easy access
-      googleRefreshToken: tokens.refresh_token, // Add this for refresh
+      googleAccessToken: tokens.access_token,
+      googleRefreshToken: tokens.refresh_token,
       user: payload
-    });
-
-    console.log("userTokens set",userTokens);
+    };
     
+    await redis.set(
+      `${USER_TOKEN_PREFIX}${data.id}`,
+      JSON.stringify(userData),
+      'EX',
+      60 * 60 * 24 * 30 // 30 days expiration
+    );
     
-    console.log(`Stored tokens for user ${data.id}`);
+    console.log(`Stored tokens in Redis for user ${data.id}`);
     
     // Set JWT in cookie
     setTokenCookie(res, jwtToken);
@@ -105,15 +107,15 @@ export const getAuthStatus = (req, res) => {
 };
 
 // Logout
-export const logout = (req, res) => {
+export const logout = async (req, res) => {
   const { provider } = req.params;
   const token = req.cookies.auth_token;
   
   if (token) {
     const decoded = verifyToken(token);
     if (decoded && decoded.userId) {
-      userTokens.delete(decoded.userId);
-      console.log(`Deleted tokens for user ${decoded.userId}`);
+      await redis.del(`${USER_TOKEN_PREFIX}${decoded.userId}`);
+      console.log(`Deleted tokens from Redis for user ${decoded.userId}`);
     }
   }
   
@@ -122,10 +124,16 @@ export const logout = (req, res) => {
 };
 
 // Get Google tokens for API calls (protected route)
-export const getGoogleTokens = (req, res) => {
-  const userData = userTokens.get(req.user.userId);
+export const getGoogleTokens = async (req, res) => {
+  const userDataStr = await redis.get(`${USER_TOKEN_PREFIX}${req.user.userId}`);
   
-  if (!userData || !userData.googleTokens) {
+  if (!userDataStr) {
+    return res.status(404).json({ error: 'Google tokens not found' });
+  }
+  
+  const userData = JSON.parse(userDataStr);
+  
+  if (!userData.googleTokens) {
     return res.status(404).json({ error: 'Google tokens not found' });
   }
   
