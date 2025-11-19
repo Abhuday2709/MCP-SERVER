@@ -156,7 +156,49 @@ Analyze the user's query and determine:
 2. If yes, which tool should be used?
 3. What parameters should be passed?
 
-Respond in JSON format:
+EXAMPLES:
+
+Example 1 - Sending email:
+User: "Send an email to john@example.com with subject Meeting saying Let's meet tomorrow at 3pm"
+Response:
+{
+  "needsTool": true,
+  "toolName": "gmail_send_message",
+  "toolArgs": {
+    "to": "john@example.com",
+    "subject": "Meeting",
+    "body": "Let's meet tomorrow at 3pm"
+  },
+  "reasoning": "User wants to send an email"
+}
+
+Example 2 - Sending email with full message:
+User: "Email sarah@test.com about the project update. Tell her the project is on track and we'll deliver by Friday"
+Response:
+{
+  "needsTool": true,
+  "toolName": "gmail_send_message",
+  "toolArgs": {
+    "to": "sarah@test.com",
+    "subject": "Project Update",
+    "body": "Hi Sarah,\\n\\nThe project is on track and we'll deliver by Friday.\\n\\nBest regards"
+  },
+  "reasoning": "User wants to send an email about project update"
+}
+
+Example 3 - Listing emails:
+User: "Show me my recent emails"
+Response:
+{
+  "needsTool": true,
+  "toolName": "gmail_list_messages",
+  "toolArgs": {
+    "maxResults": 10
+  },
+  "reasoning": "User wants to see recent emails"
+}
+
+Now respond in JSON format for the user's query above:
 {
   "needsTool": true/false,
   "toolName": "exact_tool_name" (only if needsTool is true),
@@ -164,17 +206,11 @@ Respond in JSON format:
   "reasoning": "brief explanation"
 }
 
-If no tool is needed (e.g., general question about emails), respond:
-{
-  "needsTool": false,
-  "response": "your helpful response to the user"
-}
-
-IMPORTANT: 
-- Use exact tool names from the list above
-- Match parameter types exactly (string, number, boolean)
-- For date filters, use format YYYY/MM/DD
-- Be specific with parameters`;
+CRITICAL RULES:
+- For gmail_send_message: ALWAYS include a non-empty "body" field with the actual message content
+- Extract the email content from what the user wants to say
+- Never leave body as null, empty string, or undefined
+- If user doesn't specify body content, infer a reasonable message based on the context`;
 
   const result = await model.generateContent(enhancedPrompt);
   const geminiResponse = await result.response;
@@ -204,6 +240,20 @@ IMPORTANT:
   if (decision.needsTool && decision.toolName) {
     console.log(`Executing MCP tool: ${decision.toolName}`);
     console.log('Tool arguments:', JSON.stringify(decision.toolArgs, null, 2));
+    
+    // Validate required fields for gmail_send_message
+    if (decision.toolName === 'gmail_send_message') {
+      if (!decision.toolArgs.body || decision.toolArgs.body.trim() === '') {
+        console.error('ERROR: Body is empty or null for gmail_send_message');
+        console.error('Original user message:', message);
+        return res.json({
+          success: false,
+          response: 'I couldn\'t extract the email body from your message. Please specify what you want to say in the email.',
+          usedMCP: false,
+          mode: 'error'
+        });
+      }
+    }
 
     try {
       // Execute the MCP tool

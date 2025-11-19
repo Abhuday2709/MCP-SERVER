@@ -329,8 +329,20 @@ class GmailMCPServer {
     const { to, subject, body, cc } = args;
     const { accessToken } = args._auth || {};
 
+    console.log('[Gmail Server] sendMessage called with args:', {
+      to,
+      subject,
+      body: body ? `"${body.substring(0, 50)}..."` : 'NULL/EMPTY',
+      cc,
+      hasAccessToken: !!accessToken
+    });
+
     if (!accessToken) {
       throw new Error('Access token is required');
+    }
+
+    if (!body || body.trim() === '') {
+      throw new Error('Email body is required and cannot be empty');
     }
 
     const oauth2Client = new google.auth.OAuth2();
@@ -338,14 +350,20 @@ class GmailMCPServer {
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-    // Create email
-    const email = [
+    // Create email with proper MIME format
+    const emailLines = [
       `To: ${to}`,
-      cc ? `Cc: ${cc}` : '',
+      cc ? `Cc: ${cc}` : null,
       `Subject: ${subject}`,
+      'Content-Type: text/plain; charset=utf-8',
+      'MIME-Version: 1.0',
       '',
-      body,
-    ].filter(Boolean).join('\n');
+      body
+    ].filter(line => line !== null);
+
+    const email = emailLines.join('\r\n');
+
+    console.log('[Gmail Server] Formatted email:', email.substring(0, 200));
 
     const encodedEmail = Buffer.from(email)
       .toString('base64')
