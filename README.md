@@ -115,6 +115,21 @@ npm install
    - Authorized redirect URIs: `http://localhost:3000/api/auth/google/callback`
 7. Download credentials (Client ID and Secret)
 
+### 3b. Configure Microsoft Azure (Optional - for Teams Integration)
+
+For Microsoft Teams integration, you'll need to register an application in Azure Active Directory.
+
+**See detailed setup instructions in [AZURE_APP_REGISTRATION.md](./AZURE_APP_REGISTRATION.md)**
+
+Quick steps:
+1. Go to [Azure Portal](https://portal.azure.com)
+2. Navigate to Azure Active Directory → App registrations
+3. Create a new registration
+4. Add redirect URI: `http://localhost:3000/api/auth/microsoft/callback`
+5. Create a client secret
+6. Add Microsoft Graph API permissions (User.Read, Chat.Read, Chat.ReadWrite, etc.)
+7. Copy Client ID, Client Secret, and Tenant ID
+
 ### 4. Set Up Redis
 
 **Option A: Local Redis**
@@ -147,6 +162,12 @@ FRONTEND_URL=http://localhost:5173
 GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your-google-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:3000/api/auth/google/callback
+
+# Microsoft OAuth2 (Optional - for Teams Integration)
+MICROSOFT_CLIENT_ID=your-microsoft-client-id
+MICROSOFT_CLIENT_SECRET=your-microsoft-client-secret
+MICROSOFT_REDIRECT_URI=http://localhost:3000/api/auth/microsoft/callback
+MICROSOFT_TENANT_ID=common
 
 # JWT Secret
 JWT_SECRET=your-super-secret-jwt-key-min-32-characters-long

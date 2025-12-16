@@ -10,9 +10,11 @@ class MCPClientManager {
   constructor() {
     this.clients = {
       gmail: null,
+      teams: null,
     };
     this.transports = {
       gmail: null,
+      teams: null,
     };
   }
 
@@ -57,17 +59,62 @@ class MCPClientManager {
     }
   }
 
+  async connectTeams() {
+    if (this.clients.teams) {
+      return this.clients.teams;
+    }
+
+    try {
+      const serverPath = path.join(__dirname, '../servers/teams-server.js');
+      
+      console.log('Starting Teams MCP server from:', serverPath);
+
+      // Create transport - StdioClientTransport expects command and args
+      const transport = new StdioClientTransport({
+        command: 'node',
+        args: [serverPath],
+      });
+
+      this.transports.teams = transport;
+
+      // Create client
+      const client = new Client(
+        {
+          name: 'teams-client',
+          version: '1.0.0',
+        },
+        {
+          capabilities: {},
+        }
+      );
+
+      // Connect client to transport
+      await client.connect(transport);
+      this.clients.teams = client;
+
+      console.log('Teams MCP client connected successfully');
+      return client;
+    } catch (error) {
+      console.error('Error connecting Teams client:', error);
+      throw error;
+    }
+  }
+
   async getAvailableTools(providers = []) {
     const tools = [];
 
     for (const provider of providers) {
       try {
-        if (provider !== 'gmail') {
+        let client = null;
+
+        if (provider === 'gmail') {
+          client = await this.connectGmail();
+        } else if (provider === 'teams') {
+          client = await this.connectTeams();
+        } else {
           console.log(`Skipping ${provider} - not implemented yet`);
           continue;
         }
-
-        const client = await this.connectGmail();
 
         if (client) {
           console.log(`Requesting tools from ${provider}...`);
@@ -86,11 +133,15 @@ class MCPClientManager {
 
   async callTool(provider, toolName, args, accessToken) {
     try {
-      if (provider !== 'gmail') {
+      let client = null;
+
+      if (provider === 'gmail') {
+        client = await this.connectGmail();
+      } else if (provider === 'teams') {
+        client = await this.connectTeams();
+      } else {
         throw new Error(`Provider ${provider} not implemented yet`);
       }
-
-      const client = await this.connectGmail();
 
       if (!client) {
         throw new Error(`Client not available for provider: ${provider}`);
@@ -142,8 +193,8 @@ class MCPClientManager {
       }
     }
 
-    this.clients = { gmail: null };
-    this.transports = { gmail: null };
+    this.clients = { gmail: null, teams: null };
+    this.transports = { gmail: null, teams: null };
   }
 }
 

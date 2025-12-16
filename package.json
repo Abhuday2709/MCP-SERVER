@@ -7,13 +7,22 @@
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/integration/*.test.js",
+    "test:auth": "node --test tests/integration/auth.test.js",
+    "test:teams-chat": "node --test tests/integration/teams-chat.test.js",
+    "test:teams-channels": "node --test tests/integration/teams-channels.test.js",
+    "test:query": "node --test tests/integration/query-detection.test.js",
+    "test:multi-provider": "node --test tests/integration/multi-provider.test.js",
+    "test:error": "node --test tests/integration/error-handling.test.js",
+    "test:auth-status": "node --test tests/integration/auth-status-logout.test.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@azure/msal-node": "^3.8.4",
     "@google/generative-ai": "^0.24.1",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
     "@modelcontextprotocol/sdk": "^1.22.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -27,6 +36,7 @@
     "redis": "^5.9.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.11"
+    "nodemon": "^3.1.11",
+    "supertest": "^7.0.0"
   }
 }

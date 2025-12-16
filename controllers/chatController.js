@@ -10,26 +10,44 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Redis key prefix for user tokens
 const USER_TOKEN_PREFIX = 'user:token:';
 
-// Helper to get user's Google access token
+// Helper to get user's access tokens (both Google and Microsoft)
 async function getUserAccessToken(req) {
   const token = req.cookies.auth_token;
   console.log("cookies", req.cookies);
   
-  if (!token) return null;
+  if (!token) {
+    return {
+      googleAccessToken: null,
+      microsoftAccessToken: null
+    };
+  }
   
   const decoded = verifyToken(token);
   console.log("decoded", decoded);
   
-  if (!decoded) return null;
+  if (!decoded) {
+    return {
+      googleAccessToken: null,
+      microsoftAccessToken: null
+    };
+  }
   
   const userDataStr = await redis.get(`${USER_TOKEN_PREFIX}${decoded.userId}`);
   
-  if (!userDataStr) return null;
+  if (!userDataStr) {
+    return {
+      googleAccessToken: null,
+      microsoftAccessToken: null
+    };
+  }
   
   const userData = JSON.parse(userDataStr);
   console.log("userData", userData);
   
-  return userData?.googleAccessToken || null;
+  return {
+    googleAccessToken: userData?.googleAccessToken || null,
+    microsoftAccessToken: userData?.microsoftAccessToken || null
+  };
 }
 
 // Helper to check if query is email-related
@@ -46,6 +64,19 @@ function isEmailRelatedQuery(message) {
   return emailKeywords.some(keyword => lowerMessage.includes(keyword));
 }
 
+// Helper to check if query is Teams-related
+function isTeamsRelatedQuery(message) {
+  const teamsKeywords = [
+    'teams', 'team', 'channel', 'chat', 'meeting',
+    'send message', 'post to', 'teams message',
+    'my chats', 'recent chats', 'team channels',
+    'microsoft teams', 'teams chat'
+  ];
+  
+  const lowerMessage = message.toLowerCase();
+  return teamsKeywords.some(keyword => lowerMessage.includes(keyword));
+}
+
 // UNIFIED: Smart chat that auto-detects whether to use MCP
 export async function aiResponse(req, res) {
   try {
@@ -55,28 +86,50 @@ export async function aiResponse(req, res) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
-    // Get user's Google access token (if available)
-    const googleAccessToken = await getUserAccessToken(req);
-    const isAuthenticated = !!googleAccessToken;
+    // Get user's access tokens (both Google and Microsoft)
+    const { googleAccessToken, microsoftAccessToken } = await getUserAccessToken(req);
+    const isAuthenticated = !!(googleAccessToken || microsoftAccessToken);
     
-    // Check if this is an email-related query
+    // Check if this is an email-related or Teams-related query
     const isEmailQuery = isEmailRelatedQuery(message);
+    const isTeamsQuery = isTeamsRelatedQuery(message);
 
     console.log(`Query: "${message.substring(0, 50)}..."`);
-    console.log(`Is authenticated: ${isAuthenticated}`);
+    console.log(`Is authenticated (Google): ${!!googleAccessToken}`);
+    console.log(`Is authenticated (Microsoft): ${!!microsoftAccessToken}`);
     console.log(`Is email query: ${isEmailQuery}`);
+    console.log(`Is Teams query: ${isTeamsQuery}`);
 
-    // If authenticated AND email query, try to use MCP
-    if (isAuthenticated && isEmailQuery) {
+    // Determine which providers to use based on authentication and query type
+    const providers = [];
+    if (googleAccessToken && isEmailQuery) providers.push('gmail');
+    if (microsoftAccessToken && isTeamsQuery) providers.push('teams');
+
+    // If we have providers to use, try MCP
+    if (providers.length > 0) {
       try {
-        console.log('Attempting to use MCP tools...');
+        console.log(`Attempting to use MCP tools for providers: ${providers.join(', ')}`);
         
-        // Get available MCP tools
-        const mcpTools = await mcpClient.getAvailableTools(['gmail']);
+        // Get available MCP tools for the relevant providers
+        const mcpTools = await mcpClient.getAvailableTools(providers);
         
         if (mcpTools.length > 0) {
           console.log(`Loaded ${mcpTools.length} MCP tools, using MCP-enhanced response`);
-          return await handleMCPResponse(req, res, message, conversationHistory, googleAccessToken, mcpTools);
+          
+          // Determine which access token to pass based on the primary provider
+          const primaryProvider = providers[0];
+          const accessToken = primaryProvider === 'gmail' ? googleAccessToken : microsoftAccessToken;
+          
+          return await handleMCPResponse(
+            req, 
+            res, 
+            message, 
+            conversationHistory, 
+            accessToken, 
+            mcpTools,
+            primaryProvider,
+            { googleAccessToken, microsoftAccessToken }
+          );
         } else {
           console.log('No MCP tools available, falling back to standard response');
         }
@@ -128,7 +181,7 @@ async function handleStandardResponse(req, res, message, conversationHistory) {
 }
 
 // Handle MCP-enhanced response
-async function handleMCPResponse(req, res, message, conversationHistory, googleAccessToken, mcpTools) {
+async function handleMCPResponse(req, res, message, conversationHistory, accessToken, mcpTools, primaryProvider, allTokens) {
   const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
   // Build conversation context
@@ -142,7 +195,20 @@ async function handleMCPResponse(req, res, message, conversationHistory, googleA
     `- ${tool.name}: ${tool.description}\n  Parameters: ${JSON.stringify(tool.inputSchema.properties, null, 2)}`
   ).join('\n\n');
 
-  const enhancedPrompt = `You are an email assistant with access to the user's Gmail account through these tools:
+  // Determine assistant type based on available tools
+  const hasGmailTools = mcpTools.some(t => t.name.startsWith('gmail_'));
+  const hasTeamsTools = mcpTools.some(t => t.name.startsWith('teams_'));
+  
+  let assistantType = 'assistant';
+  if (hasGmailTools && hasTeamsTools) {
+    assistantType = 'email and Teams assistant';
+  } else if (hasGmailTools) {
+    assistantType = 'email assistant';
+  } else if (hasTeamsTools) {
+    assistantType = 'Teams assistant';
+  }
+
+  const enhancedPrompt = `You are an ${assistantType} with access to the user's account through these tools:
 
 ${toolDescriptions}
 
@@ -157,6 +223,8 @@ Analyze the user's query and determine:
 3. What parameters should be passed?
 
 EXAMPLES:
+
+Gmail Examples:
 
 Example 1 - Sending email:
 User: "Send an email to john@example.com with subject Meeting saying Let's meet tomorrow at 3pm"
@@ -198,6 +266,57 @@ Response:
   "reasoning": "User wants to see recent emails"
 }
 
+Teams Examples:
+
+Example 4 - Listing Teams chats:
+User: "Show me my recent Teams chats"
+Response:
+{
+  "needsTool": true,
+  "toolName": "teams_list_chats",
+  "toolArgs": {
+    "maxResults": 10
+  },
+  "reasoning": "User wants to see recent Teams chats"
+}
+
+Example 5 - Sending Teams message:
+User: "Send a Teams message to chat abc123 saying Great work on the presentation"
+Response:
+{
+  "needsTool": true,
+  "toolName": "teams_send_message",
+  "toolArgs": {
+    "chatId": "abc123",
+    "message": "Great work on the presentation"
+  },
+  "reasoning": "User wants to send a Teams message"
+}
+
+Example 6 - Listing Teams channels:
+User: "Show me the channels in my Marketing team"
+Response:
+{
+  "needsTool": true,
+  "toolName": "teams_list_teams",
+  "toolArgs": {},
+  "reasoning": "User wants to see their teams first to find the Marketing team"
+}
+
+Example 7 - Posting to Teams channel:
+User: "Post to the General channel in team xyz789 saying Meeting at 2pm today"
+Response:
+{
+  "needsTool": true,
+  "toolName": "teams_post_channel_message",
+  "toolArgs": {
+    "teamId": "xyz789",
+    "channelId": "general",
+    "message": "Meeting at 2pm today"
+  },
+  "reasoning": "User wants to post a message to a Teams channel"
+}
+
 Now respond in JSON format for the user's query above:
 {
   "needsTool": true/false,
@@ -208,9 +327,11 @@ Now respond in JSON format for the user's query above:
 
 CRITICAL RULES:
 - For gmail_send_message: ALWAYS include a non-empty "body" field with the actual message content
-- Extract the email content from what the user wants to say
-- Never leave body as null, empty string, or undefined
-- If user doesn't specify body content, infer a reasonable message based on the context`;
+- For teams_send_message: ALWAYS include a non-empty "message" field with the actual message content
+- For teams_post_channel_message: ALWAYS include a non-empty "message" field with the actual message content
+- Extract the email/message content from what the user wants to say
+- Never leave body/message as null, empty string, or undefined
+- If user doesn't specify content, infer a reasonable message based on the context`;
 
   const result = await model.generateContent(enhancedPrompt);
   const geminiResponse = await result.response;
@@ -254,14 +375,40 @@ CRITICAL RULES:
         });
       }
     }
+    
+    // Validate required fields for Teams message tools
+    if (decision.toolName === 'teams_send_message' || decision.toolName === 'teams_post_channel_message') {
+      if (!decision.toolArgs.message || decision.toolArgs.message.trim() === '') {
+        console.error(`ERROR: Message is empty or null for ${decision.toolName}`);
+        console.error('Original user message:', message);
+        return res.json({
+          success: false,
+          response: 'I couldn\'t extract the message content from your request. Please specify what you want to say.',
+          usedMCP: false,
+          mode: 'error'
+        });
+      }
+    }
 
     try {
+      // Determine which provider and access token to use based on tool name
+      let provider = primaryProvider;
+      let tokenToUse = accessToken;
+      
+      if (decision.toolName.startsWith('gmail_')) {
+        provider = 'gmail';
+        tokenToUse = allTokens.googleAccessToken;
+      } else if (decision.toolName.startsWith('teams_')) {
+        provider = 'teams';
+        tokenToUse = allTokens.microsoftAccessToken;
+      }
+      
       // Execute the MCP tool
       const toolResult = await mcpClient.callTool(
-        'gmail',
+        provider,
         decision.toolName,
         decision.toolArgs,
-        googleAccessToken
+        tokenToUse
       );
 
       // Extract text from tool result
@@ -281,13 +428,18 @@ CRITICAL RULES:
       }
 
       // Ask Gemini to format the result for the user
+      const toolType = decision.toolName.startsWith('gmail_') ? 'Gmail' : 
+                       decision.toolName.startsWith('teams_') ? 'Teams' : 'tool';
+      
       const formattingPrompt = `The user asked: "${message}"
 
-I executed the Gmail tool "${decision.toolName}" and got this result:
+I executed the ${toolType} tool "${decision.toolName}" and got this result:
 ${JSON.stringify(parsedResult, null, 2)}
 
 Please provide a clear, friendly, and well-formatted response to the user based on this data. 
 - If there are emails, list them clearly with sender, subject, and date
+- If there are Teams chats or messages, list them clearly with relevant details
+- If there are Teams channels, list them with team and channel names
 - If there's an error, explain it helpfully
 - Be conversational and helpful
 - Format the response in a readable way`;
@@ -340,26 +492,38 @@ Please provide a clear, friendly, and well-formatted response to the user based 
 // Get chat status with MCP tools
 export async function getChatStatus(req, res) {
   try {
-    const googleAccessToken = await getUserAccessToken(req);
+    const { googleAccessToken, microsoftAccessToken } = await getUserAccessToken(req);
     
-    if (!googleAccessToken) {
+    // Determine which providers are authenticated
+    const providers = [];
+    if (googleAccessToken) providers.push('gmail');
+    if (microsoftAccessToken) providers.push('teams');
+    
+    if (providers.length === 0) {
       return res.json({
         authenticated: false,
+        connectedProviders: [],
         availableTools: [],
         capabilities: ['standard_chat']
       });
     }
 
-    const mcpTools = await mcpClient.getAvailableTools(['gmail']);
+    // Get available MCP tools for all authenticated providers
+    const mcpTools = await mcpClient.getAvailableTools(providers);
+
+    // Build capabilities list
+    const capabilities = ['standard_chat', 'mcp_tools'];
+    if (googleAccessToken) capabilities.push('email_access');
+    if (microsoftAccessToken) capabilities.push('teams_access');
 
     res.json({
       authenticated: true,
-      connectedProviders: ['gmail'],
+      connectedProviders: providers,
       availableTools: mcpTools.map(t => ({
         name: t.name,
         description: t.description
       })),
-      capabilities: ['standard_chat', 'email_access', 'mcp_tools']
+      capabilities
     });
 
   } catch (error) {
