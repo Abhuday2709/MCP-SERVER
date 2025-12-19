@@ -183,12 +183,12 @@ class TeamsMCPServer {
 
     // Find matching chats
     const matches = chats.filter(chat => {
-      // Match by topic/name
-      if (chat.topic && chat.topic.toLowerCase().includes(searchTerm)) {
+      // Match by topic/name - EXACT match for topic
+      if (chat.topic && chat.topic.toLowerCase() === searchTerm) {
         return true;
       }
 
-      // Match by participant name
+      // Match by participant name - includes for flexibility
       if (chat.members) {
         return chat.members.some(member => 
           member.displayName?.toLowerCase().includes(searchTerm) ||
@@ -367,10 +367,31 @@ class TeamsMCPServer {
       `/me/chats?$expand=members&$top=50`
     );
 
-    const search = (chatName || participantName || participantEmail).toLowerCase();
+    // PRIORITY 1: If chatName is provided, search by chat topic FIRST
+    if (chatName && !participantName && !participantEmail) {
+      console.log('[Teams] Searching for chat by name:', chatName);
+      const search = chatName.toLowerCase();
+      
+      const chat = chatsRes.value.find(c =>
+        c.topic && c.topic.toLowerCase().includes(search)
+      );
 
-    // If searching by participant (not chat name), prioritize one-on-one chats
-    if (participantName || participantEmail) {
+      if (chat) {
+        targetChatId = chat.id;
+        console.log('[Teams] Found chat by name:', { 
+          id: chat.id, 
+          type: chat.chatType, 
+          topic: chat.topic 
+        });
+      } else {
+        throw new Error(`Chat with name "${chatName}" not found. Available chats: ${chatsRes.value.filter(c => c.topic).map(c => c.topic).join(', ')}`);
+      }
+    }
+    // PRIORITY 2: If participantName or participantEmail provided, prioritize one-on-one chats
+    else if (participantName || participantEmail) {
+      console.log('[Teams] Searching for participant:', participantName || participantEmail);
+      const search = (participantName || participantEmail).toLowerCase();
+      
       // First, try to find a one-on-one chat with this participant
       const oneOnOneChat = chatsRes.value.find(c =>
         c.chatType === 'oneOnOne' &&
@@ -383,22 +404,24 @@ class TeamsMCPServer {
       if (oneOnOneChat) {
         targetChatId = oneOnOneChat.id;
         console.log('[Teams] Found one-on-one chat:', oneOnOneChat.id);
-      }
-    }
+      } else {
+        // If no one-on-one chat found, search all chats
+        console.log('[Teams] No one-on-one chat found, searching all chats...');
+        const chat = chatsRes.value.find(c =>
+          c.members?.some(m =>
+            m.displayName?.toLowerCase().includes(search) ||
+            m.email?.toLowerCase().includes(search)
+          )
+        );
 
-    // If no one-on-one chat found, or searching by chat name, find any matching chat
-    if (!targetChatId) {
-      const chat = chatsRes.value.find(c =>
-        c.topic?.toLowerCase().includes(search) ||
-        c.members?.some(m =>
-          m.displayName?.toLowerCase().includes(search) ||
-          m.email?.toLowerCase().includes(search)
-        )
-      );
-
-      if (chat) {
-        targetChatId = chat.id;
-        console.log('[Teams] Found chat:', { id: chat.id, type: chat.chatType, topic: chat.topic });
+        if (chat) {
+          targetChatId = chat.id;
+          console.log('[Teams] Found chat with participant:', { 
+            id: chat.id, 
+            type: chat.chatType, 
+            topic: chat.topic 
+          });
+        }
       }
     }
   }
@@ -1162,17 +1185,17 @@ class TeamsMCPServer {
           },
           {
             name: 'teams_find_chat_by_name',
-            description: 'Find a Teams chat by its name/topic or participant name',
+            description: 'Find a Teams chat by its name/topic or participant name. Returns the chat details including ALL members with their display names and email addresses. Use this to get email addresses of all participants in a chat.',
             inputSchema: {
               type: 'object',
               properties: {
                 chatName: {
                   type: 'string',
-                  description: 'The name/topic of the chat to find',
+                  description: 'The name/topic of the chat to find (e.g., "COE Team", "Project Alpha")',
                 },
                 participantName: {
                   type: 'string',
-                  description: 'Name or email of a participant in the chat',
+                  description: 'Name or email of any participant in the chat (will return all chats with this person)',
                 },
               },
             },
@@ -1196,7 +1219,7 @@ class TeamsMCPServer {
           },
           {
             name: 'teams_send_message',
-            description: 'Send a message to a Teams chat. If the one-on-one chat does not exist, it will be created automatically when using participantEmail or participantName.',
+            description: 'Send a message to a Teams chat. Can send to specific group/channel chats by name, or to one-on-one chats by participant. One-on-one chats will be created automatically if they do not exist.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -1206,15 +1229,15 @@ class TeamsMCPServer {
                 },
                 chatName: {
                   type: 'string',
-                  description: 'The name/topic of the chat to send message to (alternative to chatId)',
+                  description: 'The EXACT name/topic of a specific group chat (use this for named group chats like "COE Team", "Project Alpha", etc.)',
                 },
                 participantName: {
                   type: 'string',
-                  description: 'Name of a participant to identify or create a one-on-one chat (alternative to chatId)',
+                  description: 'Name of a person to find/create a ONE-ON-ONE chat with (use this for "message John", "send to Sarah", etc.)',
                 },
                 participantEmail: {
                   type: 'string',
-                  description: 'Email address of a participant to identify or create a one-on-one chat (alternative to chatId, preferred for one-on-one)',
+                  description: 'Email address of a person to find/create a ONE-ON-ONE chat with (preferred over participantName)',
                 },
                 message: {
                   type: 'string',

@@ -294,9 +294,15 @@ ${context}
 User query: ${message}
 
 Analyze the user's query and determine:
-1. Does this require accessing Gmail data? 
-2. If yes, which tool should be used?
-3. What parameters should be passed?
+1. Does this require tool execution?
+2. Does it require MULTIPLE STEPS (e.g., first fetch data, then use that data)?
+3. Which tool(s) should be used and in what order?
+4. What parameters should be passed?
+
+CRITICAL: For multi-step queries (e.g., "find X's email from Teams and email them"), you must:
+1. First use the appropriate lookup tool (e.g., teams_find_chat_by_name or teams_list_chats)
+2. Mark it as requiresNextStep=true
+3. After getting the result, use it for the next step
 
 EXAMPLES:
 
@@ -356,17 +362,30 @@ Response:
   "reasoning": "User wants to see recent Teams chats"
 }
 
-Example 5 - Sending Teams message:
-User: "Send a Teams message to chat abc123 saying Great work on the presentation"
+Example 5 - Sending Teams message to one-on-one chat:
+User: "Send a Teams message to John saying Great work on the presentation"
 Response:
 {
   "needsTool": true,
   "toolName": "teams_send_message",
   "toolArgs": {
-    "chatId": "abc123",
+    "participantName": "John",
     "message": "Great work on the presentation"
   },
-  "reasoning": "User wants to send a Teams message"
+  "reasoning": "User wants to send a one-on-one Teams message to John"
+}
+
+Example 5b - Sending Teams message to a specific group chat:
+User: "Send a message to the COE Team chat saying Meeting at 3pm"
+Response:
+{
+  "needsTool": true,
+  "toolName": "teams_send_message",
+  "toolArgs": {
+    "chatName": "COE Team",
+    "message": "Meeting at 3pm"
+  },
+  "reasoning": "User wants to send a message to a specific group chat named 'COE Team'"
 }
 
 Example 6 - Listing Teams channels:
@@ -393,12 +412,55 @@ Response:
   "reasoning": "User wants to post a message to a Teams channel"
 }
 
+Example 8 - Multi-step: Find email from Teams then send email:
+User: "Find bhargav's email from Teams and send him a test email"
+Response:
+{
+  "needsTool": true,
+  "toolName": "teams_find_chat_by_name",
+  "toolArgs": {
+    "participantName": "bhargav"
+  },
+  "reasoning": "First step: find Bhargav in Teams to get his email",
+  "requiresNextStep": true,
+  "nextStepDescription": "After getting Bhargav's email from Teams, send him an email"
+}
+
+Example 9 - Get all emails from a chat:
+User: "Get all the email addresses from the COE Team chat"
+Response:
+{
+  "needsTool": true,
+  "toolName": "teams_find_chat_by_name",
+  "toolArgs": {
+    "chatName": "COE Team"
+  },
+  "reasoning": "Find the COE Team chat which will return all members with their email addresses",
+  "requiresNextStep": false
+}
+
+Example 10 - Multi-step: Get emails from chat then send to all:
+User: "Find everyone's email from the Project Alpha chat and email them all"
+Response:
+{
+  "needsTool": true,
+  "toolName": "teams_find_chat_by_name",
+  "toolArgs": {
+    "chatName": "Project Alpha"
+  },
+  "reasoning": "First step: find Project Alpha chat to get all member emails",
+  "requiresNextStep": true,
+  "nextStepDescription": "After getting all member emails from the chat, send an email to each person (or ask user to confirm recipients)"
+}
+
 Now respond in JSON format for the user's query above:
 {
   "needsTool": true/false,
   "toolName": "exact_tool_name" (only if needsTool is true),
   "toolArgs": { /* parameters as specified in tool schema */ } (only if needsTool is true),
-  "reasoning": "brief explanation"
+  "reasoning": "brief explanation",
+  "requiresNextStep": false (set to true if this is part of a multi-step operation),
+  "nextStepDescription": "what to do after this step completes" (only if requiresNextStep is true)
 }
 
 CRITICAL RULES:
@@ -407,7 +469,11 @@ CRITICAL RULES:
 - For teams_post_channel_message: ALWAYS include a non-empty "message" field with the actual message content
 - Extract the email/message content from what the user wants to say
 - Never leave body/message as null, empty string, or undefined
-- If user doesn't specify content, infer a reasonable message based on the context`;
+- If user doesn't specify content, infer a reasonable message based on the context
+- NEVER make up email addresses - if you need an email, use teams_find_chat_by_name or teams_list_chats first
+- For queries like "find X's email and email them", this is a TWO-STEP process:
+  Step 1: Use teams_find_chat_by_name to get the email
+  Step 2: Use gmail_send_message with the retrieved email`;
 
   const result = await model.generateContent(enhancedPrompt);
   const geminiResponse = await result.response;
@@ -526,7 +592,174 @@ CRITICAL RULES:
         parsedResult = { data: toolResultText };
       }
 
-      // Ask Gemini to format the result for the user
+      // Handle multi-step operations with a loop
+      const executedSteps = [decision.toolName];
+      const stepReasonings = [decision.reasoning];
+      let currentResult = parsedResult;
+      let currentDecision = decision;
+      const MAX_STEPS = 5; // Safety limit to prevent infinite loops
+      
+      while (currentDecision.requiresNextStep && currentDecision.nextStepDescription && executedSteps.length < MAX_STEPS) {
+        console.log(`Multi-step operation: Executing step ${executedSteps.length + 1}...`);
+        console.log(`Previous step result:`, JSON.stringify(currentResult, null, 2));
+        
+        // Ask Gemini to determine the next step based on the previous result
+        const nextStepPrompt = `The user's original request was: "${message}"
+
+I have completed ${executedSteps.length} step(s) so far:
+${stepReasonings.map((r, i) => `${i + 1}. ${r}`).join('\n')}
+
+Result from the most recent step:
+${JSON.stringify(currentResult, null, 2)}
+
+Next step to complete: ${currentDecision.nextStepDescription}
+
+AVAILABLE TOOLS (use EXACT names):
+${toolDescriptions}
+
+Based on the result above, determine the exact next tool to call and its parameters.
+
+CRITICAL RULES:
+- Use ONLY tool names from the available tools list above
+- Extract actual data from the result (e.g., real email addresses, chat IDs, etc.)
+- NEVER use placeholder values like "example.com"
+- If the result contains an email in a "matches" array or "members" array, use that actual email
+- For sending emails, use the tool "gmail_send_message" with parameters: to, subject, body
+- For sending Teams messages, use "teams_send_message" with parameters: message, and chatId/participantEmail
+- Extract the body/message content from the original user request: "${message}"
+- If this is the final step, set requiresNextStep to false
+- Only set requiresNextStep to true if there are MORE steps needed after this one
+
+Respond in JSON format:
+{
+  "needsTool": true/false,
+  "toolName": "exact_tool_name_from_available_tools",
+  "toolArgs": { /* use actual data from the previous step result */ },
+  "reasoning": "explanation",
+  "requiresNextStep": false (set to true only if MORE steps are needed after this),
+  "nextStepDescription": "what to do after this step" (only if requiresNextStep is true)
+}`;
+
+        const nextStepResult = await model.generateContent(nextStepPrompt);
+        const nextStepResponse = await nextStepResult.response;
+        let nextStepText = nextStepResponse.text().replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        
+        console.log(`Step ${executedSteps.length + 1} decision:`, nextStepText);
+        
+        let nextStepDecision;
+        try {
+          nextStepDecision = JSON.parse(nextStepText);
+        } catch (parseError) {
+          console.error('Failed to parse next step decision:', parseError);
+          return res.json({
+            success: true,
+            response: `I completed ${executedSteps.length} step(s) but couldn't determine the next action. Here's what I found:\n\n${JSON.stringify(currentResult, null, 2)}`,
+            usedMCP: true,
+            mode: 'partial',
+            steps: executedSteps
+          });
+        }
+        
+        // Execute the next step
+        if (nextStepDecision.needsTool && nextStepDecision.toolName) {
+          console.log(`Executing tool: ${nextStepDecision.toolName}`);
+          console.log('Tool arguments:', JSON.stringify(nextStepDecision.toolArgs, null, 2));
+          
+          // Determine provider and token for this step
+          let stepProvider = primaryProvider;
+          let stepToken = accessToken;
+          
+          if (nextStepDecision.toolName.startsWith('gmail_')) {
+            stepProvider = 'gmail';
+            stepToken = allTokens.googleAccessToken;
+            if (!stepToken) {
+              return res.json({
+                success: false,
+                response: 'To complete this action with Gmail, please sign in with your Google account.',
+                usedMCP: false,
+                mode: 'auth_required',
+                authRequired: 'google',
+                steps: executedSteps
+              });
+            }
+          } else if (nextStepDecision.toolName.startsWith('teams_')) {
+            stepProvider = 'teams';
+            stepToken = allTokens.microsoftAccessToken;
+            if (!stepToken) {
+              return res.json({
+                success: false,
+                response: 'To complete this action with Teams, please sign in with your Microsoft account.',
+                usedMCP: false,
+                mode: 'auth_required',
+                authRequired: 'microsoft',
+                steps: executedSteps
+              });
+            }
+          }
+          
+          // Execute the tool
+          const stepToolResult = await mcpClient.callTool(
+            stepProvider,
+            nextStepDecision.toolName,
+            nextStepDecision.toolArgs,
+            stepToken
+          );
+          
+          const stepToolResultText = stepToolResult.content
+            .filter(c => c.type === 'text')
+            .map(c => c.text)
+            .join('\n');
+          
+          console.log(`Step ${executedSteps.length + 1} result:`, stepToolResultText);
+          
+          try {
+            currentResult = JSON.parse(stepToolResultText);
+          } catch {
+            currentResult = { data: stepToolResultText };
+          }
+          
+          // Update tracking variables
+          executedSteps.push(nextStepDecision.toolName);
+          stepReasonings.push(nextStepDecision.reasoning);
+          currentDecision = nextStepDecision;
+        } else {
+          // No more tools to execute
+          break;
+        }
+      }
+      
+      // Check if we hit the max steps limit
+      if (executedSteps.length >= MAX_STEPS) {
+        console.warn('Reached maximum step limit in multi-step operation');
+      }
+      
+      // Format the final result for multi-step operations
+      if (executedSteps.length > 1) {
+        const multiStepFormattingPrompt = `The user asked: "${message}"
+
+I completed a ${executedSteps.length}-step operation:
+${stepReasonings.map((r, i) => `${i + 1}. ${r}`).join('\n')}
+
+Final result:
+${JSON.stringify(currentResult, null, 2)}
+
+Please provide a clear, friendly confirmation message to the user about what was accomplished.`;
+
+        const finalFormattingResult = await model.generateContent(multiStepFormattingPrompt);
+        const finalFormattedResponse = await finalFormattingResult.response;
+        
+        return res.json({
+          success: true,
+          response: finalFormattedResponse.text(),
+          usedMCP: true,
+          mode: 'mcp_multi_step',
+          steps: executedSteps,
+          totalSteps: executedSteps.length,
+          rawData: currentResult
+        });
+      }
+
+      // Single-step operation: Ask Gemini to format the result for the user
       const toolType = decision.toolName.startsWith('gmail_') ? 'Gmail' : 
                        decision.toolName.startsWith('teams_') ? 'Teams' : 'tool';
       
@@ -542,6 +775,9 @@ FORMATTING GUIDELINES:
 - For emails: Format as a list with each email on a new line
   * Include: From, Subject, and Date
   * Use bullet points (- or •) for lists
+- For Teams chat members/emails: List each member with name and email clearly
+  * Format: "• Name (email@domain.com)"
+  * If multiple chats found, group by chat name
 - For Teams chats/messages: Format similarly with relevant details
 - For Teams channels: List them clearly with team names
 - For success messages (like sent email): Be concise and confirmatory
