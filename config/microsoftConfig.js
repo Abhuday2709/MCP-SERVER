@@ -27,24 +27,37 @@ const msalConfig = {
 const confidentialClientApplication = new msal.ConfidentialClientApplication(msalConfig);
 
 // Microsoft Graph API scopes for Teams access
-// Using ONLY permissions that don't require admin consent
+// Based on available permissions in Azure AD
 const MICROSOFT_SCOPES = [
-  'https://graph.microsoft.com/User.Read',           // ✓ No admin consent needed
-  'https://graph.microsoft.com/Chat.Read',           // ✓ No admin consent needed
-  'https://graph.microsoft.com/Chat.ReadWrite',      // ✓ No admin consent needed
-  'https://graph.microsoft.com/ChatMessage.Read',    // ✓ No admin consent needed
-  'https://graph.microsoft.com/ChatMessage.Send',    // ✓ No admin consent needed
-  'offline_access',                                   // ✓ No admin consent needed
-  'openid',                                           // ✓ No admin consent needed
-  'profile',                                          // ✓ No admin consent needed
-  'email'                                             // ✓ No admin consent needed
-  
-  // Removed permissions that require admin consent:
-  // - Team.ReadBasic.All (requires admin)
-  // - Channel.ReadBasic.All (requires admin)
-  // - ChannelMessage.Read.All (requires admin)
-  // - ChannelMessage.Send (requires admin)
+  // ===== OpenID / Identity =====
+  'openid',                       // Sign users in
+  'profile',                      // Basic profile
+  'email',                        // Email address
+  'offline_access',               // Refresh token support
+
+  // ===== User =====
+  'https://graph.microsoft.com/User.Read', // Sign in and read user profile
+
+  // ===== Calendars =====
+  'https://graph.microsoft.com/Calendars.Read',              // Read user calendars
+  'https://graph.microsoft.com/Calendars.Read.Shared',       // Read shared calendars
+  'https://graph.microsoft.com/Calendars.ReadBasic',         // Read basic calendar details
+  'https://graph.microsoft.com/Calendars.ReadWrite',         // Full access to user calendars
+  'https://graph.microsoft.com/Calendars.ReadWrite.Shared',  // Read/write shared calendars
+
+  // ===== Teams & Channels =====
+  'https://graph.microsoft.com/Team.ReadBasic.All',           // Read team names & descriptions
+  'https://graph.microsoft.com/Channel.ReadBasic.All',        // Read channel names & descriptions
+  'https://graph.microsoft.com/ChannelMessage.Read.All',      // Read channel messages (Admin consent)
+  'https://graph.microsoft.com/ChannelMessage.Send',          // Send channel messages
+
+  // ===== Chats =====
+  'https://graph.microsoft.com/Chat.Create',                  // Create chats
+  'https://graph.microsoft.com/Chat.Read',                    // Read chat messages
+  'https://graph.microsoft.com/Chat.ReadBasic',               // Read chat names & members
+  'https://graph.microsoft.com/Chat.ReadWrite',               // Read/write chat messages
 ];
+
 
 // OAuth configuration
 const microsoftOAuthClient = {

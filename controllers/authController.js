@@ -29,37 +29,77 @@ export const googleCallback = async (req, res) => {
     const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
     const { data } = await oauth2.userinfo.get();
     
-    // Create JWT payload
+    console.log('\n=== GOOGLE LOGIN ===');
+    console.log('Email from Google:', data.email);
+    
+    // Check if user already has a session (JWT cookie from previous login)
+    const existingToken = req.cookies.auth_token;
+    let sessionId;
+    let existingData = {};
+    
+    if (existingToken) {
+      const existingDecoded = verifyToken(existingToken);
+      if (existingDecoded && existingDecoded.sessionId) {
+        // User already has a session - use that session ID
+        sessionId = existingDecoded.sessionId;
+        console.log('Found existing session:', sessionId);
+        
+        const existingDataStr = await redis.get(`${USER_TOKEN_PREFIX}${sessionId}`);
+        existingData = existingDataStr ? JSON.parse(existingDataStr) : {};
+        //console.log('Existing data from session:', existingData);
+      }
+    }
+    
+    // If no existing session, create new session ID
+    if (!sessionId) {
+      sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      console.log('Creating new session:', sessionId);
+    }
+    
+    console.log('Redis key will be:', `${USER_TOKEN_PREFIX}${sessionId}`);
+    console.log('Has Microsoft tokens?', !!existingData.microsoftTokens);
+    console.log('Has Google tokens?', !!existingData.googleTokens);
+    
+    // Create JWT payload with session ID
     const payload = {
-      userId: data.id,
+      sessionId: sessionId,
+      userId: sessionId, // Keep for backward compatibility
       email: data.email,
       name: data.name,
       picture: data.picture,
-      provider: 'google'
-    };
-    
-    // Generate JWT
-    const jwtToken = generateToken(payload);
-    
-    // Store Google tokens in Redis
+      provider: 'google',
+      googleId: data.id,
+      googleEmail: data.email
+    };      
+    // Merge Google tokens with existing data
     const userData = {
+      ...existingData,
       googleTokens: tokens,
       googleAccessToken: tokens.access_token,
       googleRefreshToken: tokens.refresh_token,
-      user: payload
+      googleId: data.id,
+      googleEmail: data.email,
+      sessionId: sessionId,
+      // Keep the most recent name/picture
+      name: data.name,
+      picture: data.picture
     };
     
     await redis.set(
-      `${USER_TOKEN_PREFIX}${data.id}`,
+      `${USER_TOKEN_PREFIX}${sessionId}`,
       JSON.stringify(userData),
       'EX',
       60 * 60 * 24 * 30 // 30 days expiration
     );
     
-    console.log(`Stored tokens in Redis for user ${data.id}`);
+    console.log(`Stored/updated Google tokens in Redis for session ${sessionId}`);
+    console.log('Final userData has Microsoft tokens?', !!userData.microsoftTokens);
+    console.log('Final userData has Google tokens?', !!userData.googleTokens);
     
-    // Set JWT in cookie
+    // Generate and set new JWT with session ID
+    const jwtToken = generateToken(payload);
     setTokenCookie(res, jwtToken);
+    console.log(`Set JWT cookie with session ${sessionId}`);
     
     res.redirect(`${process.env.FRONTEND_URL}/auth/success?provider=google`);
   } catch (error) {
@@ -106,40 +146,80 @@ export const microsoftCallback = async (req, res) => {
     });
 
     const userProfile = await client.api('/me').get();
+    const userEmail = (userProfile.mail || userProfile.userPrincipalName).toLowerCase();
     
-    // Create JWT payload
+    console.log('\n=== MICROSOFT LOGIN ===');
+    console.log('Email from Microsoft:', userEmail);
+    
+    // Check if user already has a session (JWT cookie from previous login)
+    const existingToken = req.cookies.auth_token;
+    let sessionId;
+    let existingData = {};
+    
+    if (existingToken) {
+      const existingDecoded = verifyToken(existingToken);
+      if (existingDecoded && existingDecoded.sessionId) {
+        // User already has a session - use that session ID
+        sessionId = existingDecoded.sessionId;
+        console.log('Found existing session:', sessionId);
+        
+        const existingDataStr = await redis.get(`${USER_TOKEN_PREFIX}${sessionId}`);
+        existingData = existingDataStr ? JSON.parse(existingDataStr) : {};
+        //console.log('Existing data from session:', existingData);
+      }
+    }
+    
+    // If no existing session, create new session ID
+    if (!sessionId) {
+      sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      console.log('Creating new session:', sessionId);
+    }
+    
+    console.log('Redis key will be:', `${USER_TOKEN_PREFIX}${sessionId}`);
+    console.log('Has Google tokens?', !!existingData.googleTokens);
+    console.log('Has Microsoft tokens?', !!existingData.microsoftTokens);
+    
+    // Create JWT payload with session ID
     const payload = {
-      userId: userProfile.id,
-      email: userProfile.mail || userProfile.userPrincipalName,
+      sessionId: sessionId,
+      userId: sessionId, // Keep for backward compatibility
+      email: userEmail,
       name: userProfile.displayName,
-      provider: 'microsoft'
-    };
-    
-    // Generate JWT
-    const jwtToken = generateToken(payload);
-    
-    // Store Microsoft tokens in Redis
+      provider: 'microsoft',
+      microsoftId: userProfile.id,
+      microsoftEmail: userEmail
+    };                
+    // Merge Microsoft tokens with existing data
     const userData = {
+      ...existingData,
       microsoftTokens: {
         accessToken: response.accessToken,
         refreshToken: response.refreshToken || null,
         expiresOn: response.expiresOn ? response.expiresOn.getTime() : null
       },
       microsoftAccessToken: response.accessToken,
-      user: payload
+      microsoftId: userProfile.id,
+      microsoftEmail: userEmail,
+      sessionId: sessionId,
+      // Keep the most recent name
+      name: userProfile.displayName
     };
-    
+                                                            
     await redis.set(
-      `${USER_TOKEN_PREFIX}${userProfile.id}`,
+      `${USER_TOKEN_PREFIX}${sessionId}`,
       JSON.stringify(userData),
       'EX',
       60 * 60 * 24 * 30 // 30 days expiration
     );
     
-    console.log(`Stored Microsoft tokens in Redis for user ${userProfile.id}`);
+    console.log(`Stored/updated Microsoft tokens in Redis for session ${sessionId}`);
+    console.log('Final userData has Google tokens?', !!userData.googleTokens);
+    console.log('Final userData has Microsoft tokens?', !!userData.microsoftTokens);
     
-    // Set JWT in cookie
+    // Generate and set new JWT with session ID
+    const jwtToken = generateToken(payload);
     setTokenCookie(res, jwtToken);
+    console.log(`Set JWT cookie with session ${sessionId}`);
     
     res.redirect(`${process.env.FRONTEND_URL}/auth/success?provider=microsoft`);
   } catch (error) {
@@ -176,26 +256,32 @@ export const getAuthStatus = async (req, res) => {
 
   // Check if user data exists in Redis
   try {
-    const userDataStr = await redis.get(`${USER_TOKEN_PREFIX}${decoded.userId}`);
+    // Use sessionId if available, otherwise fall back to userId
+    const redisKey = decoded.sessionId || decoded.userId;
+    const userDataStr = await redis.get(`${USER_TOKEN_PREFIX}${redisKey}`);
     
     if (userDataStr) {
       const userData = JSON.parse(userDataStr);
       
-      if (decoded.provider === 'google' && userData.googleTokens) {
+      // Check for Google authentication
+      if (userData.googleTokens) {
         response.google = {
           authenticated: true,
           user: {
-            email: decoded.email,
-            name: decoded.name,
-            picture: decoded.picture
+            email: userData.googleEmail || userData.email,
+            name: userData.name,
+            picture: userData.picture
           }
         };
-      } else if (decoded.provider === 'microsoft' && userData.microsoftTokens) {
+      }
+      
+      // Check for Microsoft authentication
+      if (userData.microsoftTokens) {
         response.microsoft = {
           authenticated: true,
           user: {
-            email: decoded.email,
-            name: decoded.name
+            email: userData.microsoftEmail || userData.email,
+            name: userData.name
           }
         };
       }

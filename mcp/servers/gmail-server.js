@@ -363,7 +363,7 @@ class GmailMCPServer {
 
     const email = emailLines.join('\r\n');
 
-    console.log('[Gmail Server] Formatted email:', email.substring(0, 200));
+    console.log('[Gmail Server] Formatted email:', email);
 
     const encodedEmail = Buffer.from(email)
       .toString('base64')

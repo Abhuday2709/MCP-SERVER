@@ -50,31 +50,102 @@ async function getUserAccessToken(req) {
   };
 }
 
-// Helper to check if query is email-related
-function isEmailRelatedQuery(message) {
-  const emailKeywords = [
-    'email', 'mail', 'inbox', 'message', 'send', 'search',
-    'from:', 'to:', 'subject:', 'unread', 'read', 'sent',
-    'gmail', 'compose', 'draft', 'attachment', 'reply',
-    'forward', 'delete', 'archive', 'spam', 'folder',
-    'recent emails', 'latest emails', 'my emails', 'check mail'
-  ];
-  
-  const lowerMessage = message.toLowerCase();
-  return emailKeywords.some(keyword => lowerMessage.includes(keyword));
+// AI-based query classification
+async function classifyQueryWithAI(message, conversationHistory) {
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    // Build conversation context
+    const context = conversationHistory && conversationHistory.length > 0
+      ? conversationHistory
+          .slice(-5)
+          .map(msg => `${msg.type === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
+          .join('\n')
+      : 'No previous conversation';
+
+    const classificationPrompt = `You are an intelligent query classifier. Analyze the user's query and conversation history to determine if it's related to:
+1. **Email/Gmail** - queries about emails, sending messages, checking inbox, composing, searching emails, etc.
+2. **Microsoft Teams** - queries about Teams chats, channels, meetings, Teams messages, calendar events, etc.
+3. **Both** - queries that could involve both email and Teams
+4. **Neither** - general queries not related to email or Teams
+
+Previous conversation:
+${context}
+
+Current user query: "${message}"
+
+IMPORTANT RULES:
+- If the query mentions "email", "mail", "gmail", "inbox", "send to email" → classify as EMAIL
+- If the query mentions "teams", "chat", "channel", "meeting", "calendar" → classify as TEAMS
+- If the query mentions both or could apply to both → classify as BOTH
+- Consider conversation context - if they were talking about Teams before, a follow-up might be Teams-related
+- Be smart about ambiguous queries like "send a message" - check context for clues
+- General questions like "hello", "how are you", "what can you do" → classify as NEITHER
+
+Respond ONLY with a valid JSON object in this exact format:
+{
+  "isEmail": true/false,
+  "isTeams": true/false,
+  "confidence": "high/medium/low",
+  "reasoning": "brief explanation"
 }
 
-// Helper to check if query is Teams-related
-function isTeamsRelatedQuery(message) {
-  const teamsKeywords = [
-    'teams', 'team', 'channel', 'chat', 'meeting',
-    'send message', 'post to', 'teams message',
-    'my chats', 'recent chats', 'team channels',
-    'microsoft teams', 'teams chat'
-  ];
-  
-  const lowerMessage = message.toLowerCase();
-  return teamsKeywords.some(keyword => lowerMessage.includes(keyword));
+Examples:
+
+Query: "Show me my recent emails"
+Response: {"isEmail": true, "isTeams": false, "confidence": "high", "reasoning": "Explicitly asks for emails"}
+
+Query: "List my Teams chats"
+Response: {"isEmail": false, "isTeams": true, "confidence": "high", "reasoning": "Explicitly asks for Teams chats"}
+
+Query: "Send a message to John"
+Response: {"isEmail": true, "isTeams": true, "confidence": "medium", "reasoning": "Ambiguous - could be email or Teams message"}
+
+Query: "What's the weather today?"
+Response: {"isEmail": false, "isTeams": false, "confidence": "high", "reasoning": "General question, not related to email or Teams"}
+
+Query: "Create a meeting tomorrow at 3pm"
+Response: {"isEmail": false, "isTeams": true, "confidence": "high", "reasoning": "Meeting creation is a Teams/Calendar feature"}
+
+Now classify this query and respond with JSON only:`;
+
+    const result = await model.generateContent(classificationPrompt);
+    const response = await result.response;
+    const text = response.text().trim();
+
+    // Extract JSON from the response (handle markdown code blocks)
+    let jsonText = text;
+    if (text.includes('```json')) {
+      jsonText = text.match(/```json\s*([\s\S]*?)\s*```/)?.[1] || text;
+    } else if (text.includes('```')) {
+      jsonText = text.match(/```\s*([\s\S]*?)\s*```/)?.[1] || text;
+    }
+
+    const classification = JSON.parse(jsonText);
+    
+    console.log('AI Classification Result:', classification);
+    
+    return {
+      isEmail: classification.isEmail || false,
+      isTeams: classification.isTeams || false,
+      confidence: classification.confidence || 'low',
+      reasoning: classification.reasoning || 'No reasoning provided'
+    };
+  } catch (error) {
+    console.error('Error in AI classification, using fallback:', error.message);
+    
+    // Fallback to simple keyword matching if AI classification fails
+    const lowerMessage = message.toLowerCase();
+    const hasEmailKeywords = ['email', 'mail', 'gmail', 'inbox', 'send to'].some(k => lowerMessage.includes(k));
+    const hasTeamsKeywords = ['teams', 'team', 'chat', 'channel', 'meeting', 'calendar'].some(k => lowerMessage.includes(k));
+    
+    return {
+      isEmail: hasEmailKeywords,
+      isTeams: hasTeamsKeywords,
+      confidence: 'low',
+      reasoning: 'Fallback keyword matching due to AI error'
+    };
+  }
 }
 
 // UNIFIED: Smart chat that auto-detects whether to use MCP
@@ -90,15 +161,20 @@ export async function aiResponse(req, res) {
     const { googleAccessToken, microsoftAccessToken } = await getUserAccessToken(req);
     const isAuthenticated = !!(googleAccessToken || microsoftAccessToken);
     
-    // Check if this is an email-related or Teams-related query
-    const isEmailQuery = isEmailRelatedQuery(message);
-    const isTeamsQuery = isTeamsRelatedQuery(message);
+    // Use AI to intelligently classify the query
+    const classification = await classifyQueryWithAI(message, conversationHistory);
+    const isEmailQuery = classification.isEmail;
+    const isTeamsQuery = classification.isTeams;
 
     console.log(`Query: "${message.substring(0, 50)}..."`);
     console.log(`Is authenticated (Google): ${!!googleAccessToken}`);
     console.log(`Is authenticated (Microsoft): ${!!microsoftAccessToken}`);
-    console.log(`Is email query: ${isEmailQuery}`);
-    console.log(`Is Teams query: ${isTeamsQuery}`);
+    console.log(`AI Classification:`, {
+      isEmail: isEmailQuery,
+      isTeams: isTeamsQuery,
+      confidence: classification.confidence,
+      reasoning: classification.reasoning
+    });
 
     // Determine which providers to use based on authentication and query type
     const providers = [];
@@ -398,9 +474,33 @@ CRITICAL RULES:
       if (decision.toolName.startsWith('gmail_')) {
         provider = 'gmail';
         tokenToUse = allTokens.googleAccessToken;
+        
+        // Check if Gmail token is available
+        if (!tokenToUse) {
+          console.error('ERROR: Gmail tool requested but user not authenticated with Google');
+          return res.json({
+            success: false,
+            response: 'To use Gmail features, please sign in with your Google account first. Click the "Sign in with Google" button.',
+            usedMCP: false,
+            mode: 'auth_required',
+            authRequired: 'google'
+          });
+        }
       } else if (decision.toolName.startsWith('teams_')) {
         provider = 'teams';
         tokenToUse = allTokens.microsoftAccessToken;
+        
+        // Check if Microsoft token is available
+        if (!tokenToUse) {
+          console.error('ERROR: Teams tool requested but user not authenticated with Microsoft');
+          return res.json({
+            success: false,
+            response: 'To use Microsoft Teams features, please sign in with your Microsoft account first. Click the "Sign in with Microsoft" button.',
+            usedMCP: false,
+            mode: 'auth_required',
+            authRequired: 'microsoft'
+          });
+        }
       }
       
       // Execute the MCP tool
@@ -416,8 +516,7 @@ CRITICAL RULES:
         .filter(c => c.type === 'text')
         .map(c => c.text)
         .join('\n');
-
-      console.log('Tool result received (first 200 chars):', toolResultText.substring(0, 200));
+      console.log('Tool result received:', toolResultText);
 
       // Parse the tool result
       let parsedResult;
@@ -436,14 +535,34 @@ CRITICAL RULES:
 I executed the ${toolType} tool "${decision.toolName}" and got this result:
 ${JSON.stringify(parsedResult, null, 2)}
 
-Please provide a clear, friendly, and well-formatted response to the user based on this data. 
-- If there are emails, list them clearly with sender, subject, and date
-- If there are Teams chats or messages, list them clearly with relevant details
-- If there are Teams channels, list them with team and channel names
-- If there's an error, explain it helpfully
-- Be conversational and helpful
-- Format the response in a readable way`;
+Please provide a clear, friendly, and well-formatted response to the user based on this data.
 
+FORMATTING GUIDELINES:
+- Use clear section headers followed by a colon (e.g., "Your Recent Emails:")
+- For emails: Format as a list with each email on a new line
+  * Include: From, Subject, and Date
+  * Use bullet points (- or •) for lists
+- For Teams chats/messages: Format similarly with relevant details
+- For Teams channels: List them clearly with team names
+- For success messages (like sent email): Be concise and confirmatory
+- Use blank lines between sections for readability
+- If there's an error, explain it helpfully with suggestions
+- Be conversational and friendly
+- Use numbered lists (1., 2., 3.) for step-by-step information
+
+EXAMPLE FORMAT:
+
+Your Recent Emails:
+
+• From: John Smith <john@example.com>
+  Subject: Meeting Tomorrow
+  Date: Dec 17, 2025
+
+• From: Sarah Lee <sarah@company.com>
+  Subject: Project Update
+  Date: Dec 16, 2025
+
+Please format the response according to these guidelines.`;
       const formattingResult = await model.generateContent(formattingPrompt);
       const finalResponse = await formattingResult.response;
       const formattedText = finalResponse.text();

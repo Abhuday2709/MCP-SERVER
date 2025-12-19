@@ -127,7 +127,20 @@ Quick steps:
 3. Create a new registration
 4. Add redirect URI: `http://localhost:3000/api/auth/microsoft/callback`
 5. Create a client secret
-6. Add Microsoft Graph API permissions (User.Read, Chat.Read, Chat.ReadWrite, etc.)
+6. Add Microsoft Graph API permissions (Delegated):
+   - **Required permissions:**
+     - `User.Read` - Read user profile
+     - `Chat.Read` - Read user chats
+     - `Chat.ReadWrite` - Send and read chat messages
+     - `ChannelMessage.Read.All` - Read channel messages (requires admin consent)
+     - `ChannelMessage.Send` - Send channel messages
+     - `Channel.ReadBasic.All` - Read channel names
+     - `Team.ReadBasic.All` - Read team names
+     - `Calendars.Read` - Read user calendars (optional)
+     - `Calendars.ReadWrite` - Manage calendars (optional)
+     - `offline_access` - Maintain access to data
+     - `openid`, `profile`, `email` - Basic authentication
+   - **Note:** Some permissions (like `ChannelMessage.Read.All`) require admin consent
 7. Copy Client ID, Client Secret, and Tenant ID
 
 ### 4. Set Up Redis
